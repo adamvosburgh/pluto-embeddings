@@ -1,2 +1,8 @@
 utilties/
 data/original/
+data/processed/
+web/public/data/
+web/node_modules/
+web/dist/
+__pycache__/
+.DS_Store

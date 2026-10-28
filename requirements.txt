@@ -1,0 +1,10 @@
+pandas>=2.1
+pyarrow>=14
+numpy>=1.26
+pyogrio>=0.7
+shapely>=2.0
+pyproj>=3.6
+scipy>=1.11
+scikit-learn>=1.4
+umap-learn>=0.5.5
+torch>=2.7
