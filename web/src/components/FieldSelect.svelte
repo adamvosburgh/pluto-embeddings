@@ -51,16 +51,16 @@
 </div>
 
 <style>
-  .fs { position: relative; display: flex; align-items: center; gap: 6px; }
-  .lbl { width: 14px; color: var(--text-secondary); font-weight: 600; }
-  .cur { flex: 1; text-align: left; display: flex; justify-content: space-between; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .caret { color: var(--text-secondary); margin-left: 6px; }
-  .pop { position: absolute; z-index: 20; top: 100%; left: 20px; right: 0; margin-top: 2px; background: var(--surface-1);
-    border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.12); }
-  input { width: 100%; box-sizing: border-box; border: 0; border-bottom: 1px solid var(--border); padding: 6px 8px; font: inherit; background: transparent; color: inherit; }
-  .list { max-height: 300px; overflow-y: auto; padding: 4px 0; }
-  .grp { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); padding: 6px 8px 2px; }
-  .opt { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 3px 12px; border-radius: 0; }
-  .opt:hover, .opt.on { background: var(--hover); }
-  .unit { color: var(--text-secondary); font-size: 11px; }
+  .fs { position: relative; display: flex; align-items: center; gap: 0.4rem; }
+  .lbl { width: 1rem; font-size: 0.7rem; font-weight: 700; }
+  .cur { flex: 1; text-align: left; display: flex; justify-content: space-between; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-primary); }
+  .caret { color: var(--text-faint); margin-left: 0.4rem; }
+  .pop { position: absolute; z-index: 20; top: 100%; left: 1.4rem; right: 0; margin-top: -1px; background: var(--surface-1); border: 1px solid var(--rule); }
+  input { width: 100%; box-sizing: border-box; border: 0; border-bottom: 1px solid #eee; padding: 0.35rem 0.5rem; font: inherit; font-size: 0.7rem; background: transparent; color: inherit; }
+  .list { max-height: 300px; overflow-y: auto; padding: 0.2rem 0; }
+  .grp { font-size: 0.6rem; text-transform: lowercase; letter-spacing: 0.06em; color: var(--text-faint); padding: 0.45rem 0.5rem 0.15rem; }
+  .opt { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 0.15rem 0.75rem; font-size: 0.68rem; color: var(--text-primary); }
+  .opt:hover:not(:disabled), .opt.on { background: var(--hover); }
+  .opt.on { font-weight: 700; }
+  .unit { color: var(--text-faint); font-size: 0.6rem; }
 </style>

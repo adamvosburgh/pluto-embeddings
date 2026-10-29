@@ -7,7 +7,7 @@ export const CATEGORICAL = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4
 export const OTHER = hex('#7d7c76');
 export const MISSING = hex('#c9c8c2');
 export const RAMP = ['#86b6ef', '#6da7ec', '#5598e7', '#3987e5', '#2a78d6', '#256abf', '#1c5cab', '#184f95', '#104281', '#0d366b'].map(hex);
-export const SURFACE = '#fcfcfb';
+export const SURFACE = '#f4f4f2';
 export const INK = [11, 11, 11];
 
 export function clusterColor(c) {

@@ -33,7 +33,9 @@
   let cardExtra = $state.raw({ cluster: null, acs: null });
   let near = $state.raw([]);
   let panelOpen = $state(true);
-  let glyphLog = $state(-1.7);
+  let pointSize = $state(1.6);
+  let glyphLog = $state(0);     // log2 of the glyph size multiplier
+  let glyphsOn = $state(false);
   let bblInput = $state('');
   let bblMsg = $state('');
   let tip = $state.raw(null);
@@ -51,8 +53,7 @@
       manifest = store.m;
       status = 'Loading lots…';
       await store.loadLots();
-      viewer = new Viewer({ orbitEl, mapEl, store, onHover, onClick });
-      viewer.setGlyphScale(10 ** glyphLog);
+      viewer = new Viewer({ orbitEl, mapEl, store, onHover, onClick, onGlyphs: (on) => (glyphsOn = on) });
       await applyView();
       await recolor();
       status = '';
@@ -198,17 +199,20 @@
   }
 
   function onClick(i) {
-    if (i >= 0) select(i);
+    if (i < 0) return;
+    select(i);
+    viewer.flyTo(i);
   }
 
   function onHover(i, info) {
     tip = i >= 0 ? { i, x: info.x, y: info.y } : null;
   }
 
+  // The value the points are colored by, above the lot card in the tooltip.
   const tipLines = $derived.by(() => {
     if (!tip || !store) return [];
     const i = tip.i;
-    const lines = [`BBL ${store.bbl[i]}`];
+    const lines = [];
     if (colorMode === 'field') {
       const f = store.fields.get(colorField), v = store.decoded.get(colorField)?.[i];
       lines.push(`${f.label}: ${fmt(v, f.unit)}`);
@@ -220,16 +224,23 @@
     }
     return lines;
   });
-  let tipAcs = $state.raw(null);
+  // The same record as the lot card. Keyed on the lot, so moving within one lot doesn't refetch.
+  let tipCard = $state.raw(null);
+  const tipLot = $derived(tip ? tip.i : -1);
   $effect(() => {
-    const t = tip, acsOn = isAcs;
-    tipAcs = null;
-    if (!t || !acsOn || store.bg[t.i] === 65535) return;
-    store.loadAcs().then((a) => {
-      if (tip !== t) return;
-      const row = a.rows[store.bg[t.i]];
-      tipAcs = manifest.acs_bg.medians.map((k) => `${manifest.acs_bg.labels[k].label}: ${fmt(row[a.columns.indexOf(k)], manifest.acs_bg.labels[k].unit)}`);
+    const i = tipLot;
+    tipCard = null;
+    if (i < 0) return;
+    Promise.all([store.detail(i), cardDetails(i)]).then(([d, extra]) => {
+      if (tipLot === i) tipCard = { d, extra };
     });
+  });
+  const TIP_W = 250;
+  const tipPos = $derived.by(() => {
+    if (!tip) return '';
+    const left = tip.x + 14 + TIP_W > window.innerWidth ? tip.x - 14 - TIP_W : tip.x + 14;
+    const top = Math.min(tip.y + 14, window.innerHeight - 330);
+    return `left:${Math.max(4, left)}px; top:${Math.max(4, top)}px; width:${TIP_W}px`;
   });
 
   // ---- controls ----------------------------------------------------------------------------
@@ -291,10 +302,15 @@
               <button type="button" class:on={view === k} onclick={() => setView(k)}>{l}</button>
             {/each}
           </div>
+          <label class="row">Point size
+            <input type="range" min="0.5" max="6" step="0.1" bind:value={pointSize} oninput={() => viewer.setPointSize(pointSize)} />
+          </label>
           {#if view !== 'map'}
-            <label class="row">Glyph size
-              <input type="range" min="-3" max="-0.7" step="0.05" bind:value={glyphLog} oninput={() => viewer.setGlyphScale(10 ** glyphLog)} />
+            <label class="row">Lot size
+              <input type="range" min="-2" max="2" step="0.1" bind:value={glyphLog} disabled={!glyphsOn}
+                oninput={() => viewer.setGlyphSize(2 ** glyphLog)} />
             </label>
+            {#if !glyphsOn}<p class="note">{S.GLYPH_HINT}</p>{/if}
           {/if}
         </section>
 
@@ -398,9 +414,13 @@
 {/if}
 
 {#if tip}
-  <div class="tip" style="left:{tip.x + 12}px; top:{tip.y + 12}px">
-    {#each tipLines as l}<div>{l}</div>{/each}
-    {#if tipAcs}{#each tipAcs as l}<div class="dim">{l}</div>{/each}{/if}
+  <div class="tip" style={tipPos}>
+    {#each tipLines as l}<div class="val">{l}</div>{/each}
+    {#if tipCard}
+      <LotCard d={tipCard.d} extra={tipCard.extra} codes={manifest.codes} compact />
+    {:else}
+      <div class="dim">BBL {store.bbl[tip.i]}</div>
+    {/if}
   </div>
 {/if}
 

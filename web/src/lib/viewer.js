@@ -17,16 +17,22 @@ import { INK } from './colors.js';
 setWorkerUrl(maplibreWorkerUrl);
 
 export const TRANSITION_MS = 1500;      // placeholder
-export const GLYPH_TRIGGER = 5000;      // placeholder: fewer points than this in view -> glyphs
-export const GLYPH_CAP = 3000;          // placeholder
+// placeholders: fewer points than `trigger` in view -> glyphs, at most `cap` of them
+export const GLYPHS = { orbit: { trigger: 1500, cap: 1500 }, map: { trigger: 10000, cap: 6000 } };
 const GLYPH_MAX_SHARDS = 150;           // fetch limit per update (shards follow BBL order, see README)
+const GLYPH_NEIGHBORS = 50;             // orbit glyph size comes from the spread of this many lots around the target
+const GLYPH_LOT_FT = 100;               // placeholder: a lot this wide fills half the local point spacing at size 1
+const FLY_NEIGHBORS = 300;              // clicking a lot zooms until about this many lots are in view
+const WAKE_IN_MS = 90;                  // hovered point grows to full size this fast
+const WAKE_OUT_MS = 700;                // and shrinks back this slowly once the mouse leaves, leaving a wake
+const WAKE_GROW = 2.2;                  // a fully hovered point is (1 + this) times its size
 const ORIGIN = [-73.95, 40.7];
 const POSITRON = 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json';
-const ORBIT0 = { target: [0, 0, 0], rotationX: 30, rotationOrbit: -30, zoom: 2.4, minZoom: -2, maxZoom: 14 };
+const ORBIT0 = { target: [0, 0, 0], rotationX: 30, rotationOrbit: -30, zoom: 2.4, minZoom: -2, maxZoom: 16 };
 const FT = 0.3048;
 
 export class Viewer {
-  constructor({ orbitEl, mapEl, store, onHover, onClick }) {
+  constructor({ orbitEl, mapEl, store, onHover, onClick, onGlyphs = () => {} }) {
     this.store = store;
     this.N = store.N;
     this.orbitEl = orbitEl;
@@ -39,19 +45,35 @@ export class Viewer {
     this.highlight = [];
     this.selected = -1;
     this.axes = null;
-    this.glyphScale = 0.02;   // orbit units per foot
-    this.glyphData = { paths: [], polys: [] };
+    this.pointSize = 1.6;     // pixels
+    this.glyphSize = 1;       // multiplier on glyphUnit
+    this.glyphUnit = null;    // orbit units per foot, set from local point spacing when glyphs turn on
+    this.onGlyphs = onGlyphs;
+    this.glyphData = { paths: [], polys: [], lots: [], pathsByLot: new Map() };
+    this.hovered = -1;
+    this.wake = new Map();    // lot -> 0..1, how far it has grown; see _hover
     this.orbitVS = ORBIT0;
     this._bump();
 
-    const pick = (info) => (info && info.layer && info.layer.id === 'points' && info.index >= 0 ? info.index : -1);
+    // A point, or when glyphs are on, anywhere on the lot or its buildings.
+    const pick = (info) => {
+      const id = info?.layer?.id;
+      if (id === 'points') return info.index;
+      if (id?.startsWith('glyph-') && info.object) return info.object.i;
+      return -1;
+    };
+    const hover = (info) => {
+      const i = pick(info);
+      this._hover(i);
+      onHover(i, info);
+    };
     this.deck = new Deck({
       parent: orbitEl,
       views: new OrbitView({ id: 'orbit', orbitAxis: 'Z', fovy: 50 }),
       initialViewState: ORBIT0,
       controller: true,
       onViewStateChange: ({ viewState }) => { this.orbitVS = viewState; this._scheduleGlyphs(); },
-      onHover: (info) => onHover(pick(info), info),
+      onHover: hover,
       onClick: (info) => onClick(pick(info)),
       layers: []
     });
@@ -62,12 +84,15 @@ export class Viewer {
       this.mapPos[i * 3] = store.lon[i] - ORIGIN[0];
       this.mapPos[i * 3 + 1] = store.lat[i] - ORIGIN[1];
     }
-    this.map = new MapLibre({ container: mapEl, style: POSITRON, center: ORIGIN, zoom: 10, pitch: 40,
-      attributionControl: { compact: true } });
+    // Top down only: no pitch, no rotation.
+    this.map = new MapLibre({ container: mapEl, style: POSITRON, center: ORIGIN, zoom: 10, pitch: 0, maxPitch: 0,
+      dragRotate: false, pitchWithRotate: false, touchPitch: false, attributionControl: { compact: true } });
+    this.map.touchZoomRotate.disableRotation();
+    this.map.keyboard.disableRotation();
     this.overlay = new MapboxOverlay({
       interleaved: false,
       layers: [],
-      onHover: (info) => onHover(pick(info), info),
+      onHover: hover,
       onClick: (info) => onClick(pick(info))
     });
     this.map.addControl(this.overlay);
@@ -79,6 +104,7 @@ export class Viewer {
   }
 
   destroy() {
+    cancelAnimationFrame(this.wakeRaf);
     this.resizeObserver.disconnect();
     this.deck.finalize();
     this.map.remove();
@@ -154,24 +180,67 @@ export class Viewer {
     this.render();
   }
 
-  setGlyphScale(s) {
-    this.glyphScale = s;
+  setPointSize(px) {
+    this.pointSize = px;
+    this.render();
+  }
+
+  setGlyphSize(s) {
+    this.glyphSize = s;
     this._scheduleGlyphs(0);
   }
 
+  // ---- hover wake: the hovered lot grows quickly, and lots the mouse has left shrink back
+  // slowly. Only the lots in the wake are redrawn each frame (a small layer of their own). ---
+  _hover(i) {
+    if (i === this.hovered) return;
+    this.hovered = i;
+    if (i >= 0 && !this.wake.has(i)) this.wake.set(i, 0);
+    if (this.wakeRaf) return;
+    let last = performance.now();
+    const tick = (now) => {
+      const dt = now - last;
+      last = now;
+      let moving = false;
+      for (const [j, h] of this.wake) {
+        if (j === this.hovered) {
+          if (h < 1) { this.wake.set(j, Math.min(1, h + dt / WAKE_IN_MS)); moving = true; }
+        } else if (h - dt / WAKE_OUT_MS <= 0) {
+          this.wake.delete(j);
+          moving = true;
+        } else {
+          this.wake.set(j, h - dt / WAKE_OUT_MS);
+          moving = true;
+        }
+      }
+      if (moving) this.render();
+      this.wakeRaf = moving ? requestAnimationFrame(tick) : 0;
+    };
+    this.wakeRaf = requestAnimationFrame(tick);
+  }
+
   // ---- camera ----------------------------------------------------------------------------
+  // Zooms in on lot i close enough for its glyph to show, tilted so the extrusions read as 3D.
   flyTo(i) {
     if (this.mode === 'map') {
-      this.map.flyTo({ center: [this.store.lon[i], this.store.lat[i]], zoom: 17.5, pitch: 50, duration: 1200 });
-    } else {
-      const target = [this.pos[i * 3], this.pos[i * 3 + 1], this.pos[i * 3 + 2]];
-      this.deck.setProps({
-        initialViewState: {
-          ...this.orbitVS, target, zoom: Math.max(this.orbitVS.zoom, 6),
-          transitionDuration: 1200, transitionInterpolator: new LinearInterpolator(['target', 'zoom'])
-        }
-      });
+      this.map.flyTo({ center: [this.store.lon[i], this.store.lat[i]], zoom: 17.5, duration: 1200 });
+      return;
     }
+    const pos = this.pos, N = this.N;
+    const [tx, ty, tz] = [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]];
+    const d2 = new Float32Array(N);
+    for (let j = 0; j < N; j++) d2[j] = (pos[j * 3] - tx) ** 2 + (pos[j * 3 + 1] - ty) ** 2 + (pos[j * 3 + 2] - tz) ** 2;
+    const r = Math.max(Math.sqrt(kth(d2, FLY_NEIGHBORS)), 1e-3);
+    const half = Math.max(this.orbitEl.clientWidth, this.orbitEl.clientHeight) / 2;
+    const vs = this.orbitVS;
+    const rotationX = Math.abs(vs.rotationX) < 25 ? 35 : vs.rotationX;
+    this.glyphUnit = null;   // re-derive glyph size at the destination
+    this.deck.setProps({
+      initialViewState: {
+        ...vs, target: [tx, ty, tz], rotationX, zoom: Math.min(ORBIT0.maxZoom, Math.log2(half / r)),
+        transitionDuration: 1200, transitionInterpolator: new LinearInterpolator(['target', 'zoom', 'rotationX'])
+      }
+    });
   }
 
   resetOrbit() {
@@ -186,28 +255,55 @@ export class Viewer {
       : { coordinateSystem: COORDINATE_SYSTEM.CARTESIAN };
     const pos = this.pos;
     const at = (i) => [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]];
+    // Points face the camera. Unbillboarded circles lie flat in the XY plane and vanish edge-on,
+    // which showed as an empty band at the camera's height.
     const layers = [
       new ScatterplotLayer({
-        id: 'points', data: this.data, ...coord,
-        radiusUnits: 'pixels', getRadius: 1.6, radiusMinPixels: 1, stroked: false, pickable: true
+        id: 'points', data: this.data, ...coord, billboard: true,
+        radiusUnits: 'pixels', getRadius: this.pointSize, radiusMinPixels: 1, stroked: false, pickable: true
       })
     ];
-    if (this.glyphData.paths.length) {
+    const g = this.glyphData;
+    if (g.paths.length) {
+      // The faint lot fill is there to be hovered and clicked: the whole lot picks, not just its point.
+      layers.push(new SolidPolygonLayer({
+        id: 'glyph-lots', data: g.lots, ...coord, getPolygon: (d) => d.ring, getFillColor: (d) => d.color, pickable: true
+      }));
       layers.push(new PathLayer({
-        id: 'glyph-outlines', data: this.glyphData.paths, ...coord, getPath: (d) => d.path,
+        id: 'glyph-outlines', data: g.paths, ...coord, getPath: (d) => d.path,
         getColor: [82, 81, 78, 200], widthUnits: 'pixels', getWidth: 1
       }));
       layers.push(new SolidPolygonLayer({
-        id: 'glyph-buildings', data: this.glyphData.polys, ...coord, extruded: true,
+        id: 'glyph-buildings', data: g.polys, ...coord, extruded: true, pickable: true,
         getPolygon: (d) => d.rings, getElevation: (d) => d.h, getFillColor: (d) => d.color,
         material: { ambient: 0.5, diffuse: 0.6, shininess: 8 }
+      }));
+    }
+    if (this.wake.size) {
+      // Points in the wake grow and turn opaque; lots drawn as glyphs get a darker outline instead.
+      const c = this.base, dots = [], outlines = [];
+      for (const [i, h] of this.wake) {
+        const e = h * (2 - h);   // ease out
+        if (!this.hidden.has(i)) dots.push({ i, e });
+        else for (const p of g.pathsByLot.get(i) || []) outlines.push({ path: p.path, e });
+      }
+      layers.push(new ScatterplotLayer({
+        id: 'wake', data: dots, ...coord, billboard: true, radiusUnits: 'pixels',
+        getPosition: (d) => at(d.i), getRadius: (d) => this.pointSize * (1 + WAKE_GROW * d.e),
+        getFillColor: (d) => [c[d.i * 4], c[d.i * 4 + 1], c[d.i * 4 + 2], 140 + 115 * d.e],
+        stroked: true, lineWidthUnits: 'pixels', getLineWidth: 1,
+        getLineColor: (d) => [...INK, d.i === this.hovered ? 255 * d.e : 0]
+      }));
+      layers.push(new PathLayer({
+        id: 'wake-outlines', data: outlines, ...coord, getPath: (d) => d.path, widthUnits: 'pixels',
+        getWidth: (d) => 1 + 1.5 * d.e, getColor: (d) => [...INK, 255 * d.e]
       }));
     }
     if (this.highlight.length || this.selected >= 0) {
       const ring = this.highlight.map((i) => ({ i, sel: false }));
       if (this.selected >= 0) ring.push({ i: this.selected, sel: true });
       layers.push(new ScatterplotLayer({
-        id: 'highlight', data: ring, ...coord, getPosition: (d) => at(d.i),
+        id: 'highlight', data: ring, ...coord, billboard: true, getPosition: (d) => at(d.i),
         radiusUnits: 'pixels', getRadius: (d) => (d.sel ? 9 : 5), stroked: true, filled: false,
         lineWidthUnits: 'pixels', getLineWidth: (d) => (d.sel ? 2.5 : 1.5), getLineColor: [...INK, 230],
         updateTriggers: { getPosition: this.data }
@@ -221,8 +317,8 @@ export class Viewer {
       layers.push(new TextLayer({
         id: 'axis-labels', data: this.axes.labels, getPosition: (d) => d.position, getText: (d) => d.text,
         getSize: (d) => (d.title ? 13 : 11), getColor: [...INK, 220], getTextAnchor: (d) => d.anchor || 'middle',
-        fontFamily: 'system-ui, -apple-system, Segoe UI, sans-serif', characterSet: 'auto',
-        background: true, getBackgroundColor: [252, 252, 251, 200], backgroundPadding: [2, 1]
+        fontFamily: "'Roboto Mono', ui-monospace, monospace", characterSet: 'auto',
+        background: true, getBackgroundColor: [244, 244, 242, 220], backgroundPadding: [2, 1]
       }));
     }
     if (map) {
@@ -247,13 +343,18 @@ export class Viewer {
       this.colors.set(this.base);
       this._bump();
     }
-    this.glyphData = { paths: [], polys: [] };
+    this.glyphData = { paths: [], polys: [], lots: [], pathsByLot: new Map() };
+    this.glyphUnit = null;
+    this.onGlyphs(false);
   }
 
-  // Lots in view, nearest the camera target first, or [] if more than GLYPH_TRIGGER are in view.
+  // Lots in view, nearest the camera target first, or [] if more than the trigger are in view.
+  // `spread` is the distance from the target to its GLYPH_NEIGHBORS-th nearest lot (orbit only).
   _nearInView() {
     const pos = this.pos, N = this.N;
+    const { trigger, cap } = GLYPHS[this.mode];
     const cand = [];
+    const none = { lots: [], spread: 0 };
     if (this.mode === 'map') {
       const c = this.map.getCenter(), z = this.map.getZoom();
       const mpp = (40075016.686 * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** z);
@@ -264,7 +365,7 @@ export class Viewer {
         const ox = pos[i * 3] - cx, oy = pos[i * 3 + 1] - cy;
         if (Math.abs(ox) < dx && Math.abs(oy) < dy) {
           cand.push([i, (ox / dx) ** 2 + (oy / dy) ** 2]);
-          if (cand.length >= GLYPH_TRIGGER) return [];
+          if (cand.length >= trigger) return none;
         }
       }
     } else {
@@ -275,24 +376,25 @@ export class Viewer {
         const d = (pos[i * 3] - tx) ** 2 + (pos[i * 3 + 1] - ty) ** 2 + (pos[i * 3 + 2] - tz) ** 2;
         if (d < r2) {
           cand.push([i, d]);
-          if (cand.length >= GLYPH_TRIGGER) return [];
+          if (cand.length >= trigger) return none;
         }
       }
     }
     cand.sort((a, b) => a[1] - b[1]);
+    const spread = cand.length ? Math.sqrt(cand[Math.min(GLYPH_NEIGHBORS, cand.length) - 1][1]) : 0;
     const out = [], shards = new Set();
     for (const [i] of cand) {
       const s = Math.floor(i / 1000);
       if (!shards.has(s) && shards.size >= GLYPH_MAX_SHARDS) continue;
       shards.add(s);
       out.push(i);
-      if (out.length >= GLYPH_CAP) break;
+      if (out.length >= cap) break;
     }
-    return out;
+    return { lots: out, spread };
   }
 
   async _updateGlyphs() {
-    const lots = this._nearInView();
+    const { lots, spread } = this._nearInView();
     const token = ++this.glyphToken;
     if (!lots.length) {
       if (this.glyphData.paths.length || this.hidden.size) {
@@ -309,11 +411,19 @@ export class Viewer {
 
     const q = this.store.m.glyphs.quant_ft;
     const map = this.mode === 'map';
-    const pos = this.pos, sc = this.glyphScale;
-    const paths = [], polys = [];
+    // Orbit glyphs are sized to the point spacing around the target when they first turn on, then
+    // keep that size while they stay on, so zooming in makes them grow like the rest of the scene.
+    if (!map && this.glyphUnit == null) {
+      const spacing = spread * Math.cbrt((4 * Math.PI) / 3 / GLYPH_NEIGHBORS);
+      this.glyphUnit = Math.max(spacing, 1e-4) * 0.5 / GLYPH_LOT_FT;
+    }
+    const pos = this.pos, sc = this.glyphUnit * this.glyphSize;
+    const paths = [], polys = [], fills = [], pathsByLot = new Map();
+    const c = this.base;
     for (const i of lots) {
       const s = Math.floor(i / size), g = shards.get(s), j = i - s * size;
       const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
+      const fill = [c[i * 4], c[i * 4 + 1], c[i * 4 + 2], 45];
       const kx = map ? (q * FT) / (111320 * Math.cos((this.store.lat[i] * Math.PI) / 180)) : q * sc;
       const ky = map ? (q * FT) / 110540 : q * sc;
       const ring = (xy, a, b) => {
@@ -321,21 +431,32 @@ export class Viewer {
         for (let k = a; k < b; k++) out[k - a] = [px + xy[k * 2] * kx, py + xy[k * 2 + 1] * ky, pz];
         return out;
       };
+      const own = [];
       for (let r = g.lotRing[j]; r < g.lotRing[j + 1]; r++) {
-        paths.push({ path: ring(g.outlineXY, g.ringCoord[r], g.ringCoord[r + 1]) });
+        const p = { i, path: ring(g.outlineXY, g.ringCoord[r], g.ringCoord[r + 1]) };
+        paths.push(p);
+        own.push(p);
+        fills.push({ i, ring: p.path, color: fill });   // holes fill too; it only needs to be hoverable
       }
+      pathsByLot.set(i, own);
       for (let p = g.lotPoly[j]; p < g.lotPoly[j + 1]; p++) {
         const rings = [];
         for (let r = g.polyRing[p]; r < g.polyRing[p + 1]; r++) {
           rings.push(ring(g.polyXY, g.polyRingCoord[r], g.polyRingCoord[r + 1]));
         }
         const hft = g.heights[p] === 65535 ? 0 : g.heights[p] * 0.1;
-        const c = this.base;
-        polys.push({ rings, h: map ? hft * FT : hft * sc, color: [c[i * 4], c[i * 4 + 1], c[i * 4 + 2], 235] });
+        polys.push({ i, rings, h: map ? hft * FT : hft * sc, color: [c[i * 4], c[i * 4 + 1], c[i * 4 + 2], 235] });
       }
     }
-    this.glyphData = { paths, polys };
+    this.glyphData = { paths, polys, lots: fills, pathsByLot };
     this.hidden = new Set(lots);
     this._applyColors();
+    this.onGlyphs(true);
   }
+}
+
+// k-th smallest value (0-based); sorts `a` in place.
+function kth(a, k) {
+  a.sort();
+  return a[Math.min(k, a.length - 1)];
 }

@@ -9,6 +9,7 @@ export const COLOR_LABELS = { cluster: 'Cluster', field: 'A field', similarity: 
 export const LOTS_LIKE_THIS = 'Lots like this one';
 export const OTHER_CLUSTERS = 'Other clusters';
 export const NO_LOT = 'No lot with that BBL.';
+export const GLYPH_HINT = 'Zoom in close, or click a lot, to see lot outlines and buildings.';
 export const diagBg = (s) => `Same block group among a lot's 20 nearest neighbors: ${pct(s)}.`;
 export const diagBoro = (acc, base) =>
   `Borough guessed from the 20 nearest neighbors: ${pct(acc)} correct (largest borough alone: ${pct(base)}).`;

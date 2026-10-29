@@ -3,7 +3,8 @@
   import { fmt } from '../lib/scale.js';
 
   // d: details record; extra: { cluster, acs: {label: value...} | null }
-  let { d, extra, codes, onsimilar, onclose } = $props();
+  // compact: the hover tooltip's version, smaller and without buttons
+  let { d, extra, codes, onsimilar, onclose, compact = false } = $props();
 
   const pad2 = (x) => (x == null ? null : String(x).padStart(2, '0'));
   const v = (x) => (x == null || x === '' ? MISSING : x);
@@ -18,8 +19,8 @@
 </script>
 
 {#if d}
-  <div class="card">
-    <button class="x" type="button" onclick={onclose} aria-label="Close">×</button>
+  <div class="card" class:compact>
+    {#if !compact}<button class="x" type="button" onclick={onclose} aria-label="Close">×</button>{/if}
     <h2>{v(d.address)}</h2>
     <div class="bbl">BBL {String(d.bbl)}</div>
     <dl>
@@ -41,21 +42,27 @@
           <dt>{a.label}</dt><dd>{a.value == null ? MISSING : fmt(a.value, a.unit)}</dd>
         {/each}
       </dl>
-      <p class="note">{ACS_NOTE}</p>
+      {#if !compact}<p class="note">{ACS_NOTE}</p>{/if}
     {/if}
-    <button type="button" class="primary" onclick={onsimilar}>{LOTS_LIKE_THIS}</button>
+    {#if !compact}<button type="button" class="primary" onclick={onsimilar}>{LOTS_LIKE_THIS}</button>{/if}
   </div>
 {/if}
 
 <style>
   .card { position: relative; }
-  h2 { font-size: 15px; margin: 0 24px 2px 0; }
-  h3 { font-size: 12px; margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); }
-  .bbl { color: var(--text-secondary); font-size: 12px; margin-bottom: 8px; }
-  dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 10px; margin: 0; font-size: 12.5px; }
+  h2 { font-size: 0.85rem; margin: 0 1.5rem 0.1rem 0; }
+  h3 { font-size: 0.65rem; margin: 0.9rem 0 0.4rem; text-transform: lowercase; letter-spacing: 0.06em; font-weight: 700; }
+  .bbl { color: var(--text-secondary); font-size: 0.68rem; margin-bottom: 0.7rem; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 0.75rem; margin: 0; font-size: 0.7rem; }
   dt { color: var(--text-secondary); }
-  dd { margin: 0; }
-  .x { position: absolute; top: -4px; right: -4px; border: 0; background: none; font-size: 18px; line-height: 1; padding: 4px 6px; }
-  .note { font-size: 11.5px; color: var(--text-secondary); margin: 6px 0 0; }
-  .primary { margin-top: 10px; width: 100%; }
+  dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .x { position: absolute; top: -0.4rem; right: -0.4rem; border: 0; background: none; font-size: 1rem; line-height: 1; padding: 0.2rem 0.35rem; color: var(--text-secondary); }
+  .x:hover { color: var(--text-primary); background: none; }
+  .note { font-size: 0.65rem; color: var(--text-secondary); margin: 0.4rem 0 0; }
+  .primary { margin-top: 1rem; width: 100%; }
+
+  .compact h2 { font-size: 0.7rem; margin: 0 0 0.05rem; }
+  .compact .bbl { font-size: 0.58rem; margin-bottom: 0.35rem; }
+  .compact h3 { font-size: 0.56rem; margin: 0.45rem 0 0.2rem; }
+  .compact dl { font-size: 0.6rem; gap: 0.05rem 0.6rem; line-height: 1.4; }
 </style>
