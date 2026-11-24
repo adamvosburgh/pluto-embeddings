@@ -39,8 +39,8 @@ print(f"block group from BCTCB2020: {int(ok.sum()):,} lots, {int((~ok).sum()):,}
       f"BCTCB2020 lengths among the rest: {code[~ok].str.len().value_counts().to_dict()}", flush=True)
 
 # Point position: Latitude/Longitude, else the polygon centroid reprojected.
-lat = pd.to_numeric(df["Latitude"], errors="coerce").to_numpy(dtype=np.float64)
-lon = pd.to_numeric(df["Longitude"], errors="coerce").to_numpy(dtype=np.float64)
+lat = pd.to_numeric(df["Latitude"], errors="coerce").to_numpy(dtype=np.float64, copy=True)
+lon = pd.to_numeric(df["Longitude"], errors="coerce").to_numpy(dtype=np.float64, copy=True)
 bad = ~np.isfinite(lat) | ~np.isfinite(lon) | (lat == 0) | (lon == 0)
 cen = shapely.centroid(geoms[bad])
 to_wgs = transformer("EPSG:2263", "EPSG:4326")

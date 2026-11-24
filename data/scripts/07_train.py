@@ -2,7 +2,9 @@
 
 Encoder: categorical embeddings + numeric values + missing flags -> MLP (GELU, LayerNorm) ->
 latent. Decoder mirrors it, with a numeric head and one softmax head per categorical field.
-Loss: masked MSE averaged over numeric fields + cross-entropy averaged over categorical fields.
+Loss: masked MSE averaged over numeric fields + cross-entropy averaged over categorical fields, each field's
+loss divided by its loss when predicting the training mean, so every field counts equally whatever its spread.
+Held-out losses are reported both raw and in those units (1.0 = no better than the mean).
 
     python 07_train.py              # all four variants
     python 07_train.py pluto both   # just these
@@ -103,6 +105,10 @@ def train(v):
     n_held = int(round(N * HOLDOUT))
     held = torch.from_numpy(np.sort(perm[:n_held])).to(dev)
     tr = torch.from_numpy(perm[n_held:]).to(dev)
+    bm, bc = baseline(x, m, c, tr, held, levels)
+    # Per-field loss weights: 1 / loss of predicting the mean (floored so a near-constant field can't explode).
+    wn = 1 / torch.from_numpy(bm).float().to(dev).clamp(min=1e-3)
+    wc = 1 / torch.from_numpy(bc).float().to(dev).clamp(min=1e-3)
     model = AE(x.shape[1], levels).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=LR)
     g = torch.Generator(device="cpu").manual_seed(SEED)
@@ -117,8 +123,8 @@ def train(v):
             pn, pc = model(x[b], m[b], c[b])
             keep = 1 - m[b]
             mse_f = ((pn - x[b]) ** 2 * keep).sum(0) / keep.sum(0).clamp(min=1)
-            num_loss = mse_f.mean()
-            cat_loss = torch.stack([F.cross_entropy(l, c[b, j]) for j, l in enumerate(pc)]).mean()
+            num_loss = (mse_f * wn).mean()
+            cat_loss = (torch.stack([F.cross_entropy(l, c[b, j]) for j, l in enumerate(pc)]) * wc).mean()
             loss = num_loss + cat_loss
             opt.zero_grad()
             loss.backward()
@@ -126,13 +132,12 @@ def train(v):
             tot += float(loss)
             nb += 1
         hm, hc = per_field_losses(model, x, m, c, held)
-        held_loss = float(hm.mean() + hc.mean())
+        held_loss = float((hm / bm.clip(1e-3)).mean() + (hc / bc.clip(1e-3)).mean())
         curve.append({"epoch": ep + 1, "train": tot / nb, "held_out": held_loss})
         print(f"  [{v}] epoch {ep + 1:2d}  train {tot / nb:.4f}  held-out {held_loss:.4f}  "
               f"({time.time() - t0:,.0f} s)", flush=True)
 
     hm, hc = per_field_losses(model, x, m, c, held)
-    bm, bc = baseline(x, m, c, tr, held, levels)
     model.eval()
     lat = []
     with torch.no_grad():
@@ -149,8 +154,9 @@ def train(v):
         "variant": v, "device": str(dev), "seconds": round(time.time() - t0, 1), "curve": curve,
         "held_out_total": float(hm.mean() + hc.mean()), "baseline_total": float(bm.mean() + bc.mean()),
         "held_out_numeric": float(hm.mean()), "held_out_categorical": float(hc.mean()),
+        "held_out_normalized": float((hm / bm.clip(1e-3)).mean() + (hc / bc.clip(1e-3)).mean()),
         "per_field": per_field,
-        "settings": {"latent": LATENT_DIM, "hidden": list(HIDDEN), "epochs": EPOCHS, "batch": BATCH, "lr": LR,
+        "settings": {"loss": "per-field, divided by mean-baseline loss", "latent": LATENT_DIM, "hidden": list(HIDDEN), "epochs": EPOCHS, "batch": BATCH, "lr": LR,
                      "holdout": HOLDOUT, "seed": SEED, "n_numeric": int(x.shape[1]), "n_categorical": len(levels),
                      "acs_weight": spec["acs_weight"].get(v)},
     })
